@@ -81,7 +81,7 @@
  */
 #define RD_KAFKAP_BROKERS_MAX     1000
 #define RD_KAFKAP_TOPICS_MAX      10000
-#define RD_KAFKAP_PARTITIONS_MAX  1000
+#define RD_KAFKAP_PARTITIONS_MAX  10000
 
 
 #define RD_KAFKA_OFFSET_ERROR    -1001
@@ -130,6 +130,8 @@ struct rd_kafka_conf_s {
 	int     socket_timeout_ms;
 	int     socket_sndbuf_size;
 	int     socket_rcvbuf_size;
+        int     socket_keepalive;
+        int     socket_max_fails;
 	char   *clientid;
 	char   *brokerlist;
 	int     stats_interval_ms;
@@ -532,18 +534,24 @@ typedef struct rd_kafka_broker_s {
 		RD_KAFKA_BROKER_STATE_UP,
 	} rkb_state;
 
+        rd_ts_t             rkb_ts_state;        /* Timestamp of last
+                                                  * state change */
+
 	rd_kafka_confsource_t  rkb_source;
 	struct {
 		uint64_t tx_bytes;
 		uint64_t tx;    /* Kafka-messages (not payload msgs) */
 		uint64_t tx_err;
 		uint64_t tx_retries;
+                uint64_t req_timeouts;  /* Accumulated value */
 
 		uint64_t rx_bytes;
 		uint64_t rx;    /* Kafka messages (not payload msgs) */
 		uint64_t rx_err;
                 uint64_t rx_corrid_err; /* CorrId misses */
 	} rkb_c;
+
+        int                 rkb_req_timeouts;  /* Current value */
 
 	rd_ts_t             rkb_ts_metadata_poll; /* Next metadata poll time */
 	int                 rkb_metadata_fast_poll_cnt; /* Perform fast

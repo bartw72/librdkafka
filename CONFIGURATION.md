@@ -5,7 +5,7 @@ Property                                 |       Default | Description
 client.id                                |       rdkafka | Client identifier.
 metadata.broker.list                     |               | Initial list of brokers. The application may also use `rd_kafka_brokers_add()` to add brokers during runtime.
 message.max.bytes                        |       4000000 | Maximum transmit message size.
-receive.message.max.bytes                |     100000000 | Maximum receive message size. This is a safety precaution to avoid memory exhaustion in case of protocol hickups. The value should be at least fetch.message.max.bytes * number of partitions consumed from.
+receive.message.max.bytes                |     100000000 | Maximum receive message size. This is a safety precaution to avoid memory exhaustion in case of protocol hickups. The value should be at least fetch.message.max.bytes * number of partitions consumed from + messaging overhead (e.g. 200000 bytes).
 metadata.request.timeout.ms              |         60000 | Non-topic request timeout in milliseconds. This is for metadata requests, etc.
 topic.metadata.refresh.interval.ms       |         10000 | Topic metadata refresh interval in milliseconds. The metadata is automatically refreshed on error and connect. Use -1 to disable the intervalled refresh.
 topic.metadata.refresh.fast.cnt          |            10 | When a topic looses its leader this number of metadata requests are sent with `topic.metadata.refresh.fast.interval.ms` interval disregarding the `topic.metadata.refresh.interval.ms` value. This is used to recover quickly from transitioning leader brokers.
@@ -14,6 +14,8 @@ debug                                    |               | A comma-separated lis
 socket.timeout.ms                        |         60000 | Timeout for network requests.
 socket.send.buffer.bytes                 |             0 | Broker socket send buffer size. System default is used if 0.
 socket.receive.buffer.bytes              |             0 | Broker socket receive buffer size. System default is used if 0.
+socket.keepalive.enable                  |         false | Enable TCP keep-alives (SO_KEEPALIVE) on broker sockets
+socket.max.fails                         |             3 | Disconnect from broker when this number of send failures (e.g., timed out requests) is reached. Disable with 0. NOTE: The connection is automatically re-established.
 broker.address.ttl                       |        300000 | How long to cache the broker address resolving results.
 broker.address.family                    |           any | Allowed broker IP address families: any, v4, v6
 statistics.interval.ms                   |             0 | librdkafka statistics emit interval. The application also needs to register a stats callback using `rd_kafka_conf_set_stats_cb()`. The granularity is 1000ms. A value of 0 disables statistics.
@@ -48,7 +50,7 @@ Property                                 |       Default | Description
 request.required.acks                    |             1 | This field indicates how many acknowledgements the leader broker must receive from ISR brokers before responding to the request: *0*=broker does not send any response, *1*=broker will wait until the data is written to local log before sending a response, *-1*=broker will block until message is committed by all in sync replicas (ISRs) before sending response. *>1*=for any number > 1 the broker will block waiting for this number of acknowledgements to be received (but the broker will never wait for more acknowledgements than there are ISRs).
 enforce.isr.cnt                          |             0 | Fail messages locally if the currently known ISR count for a partition is less than this value. **NOTE**: The ISR count is fetched from the broker at regular intervals (`topic.metadata.refresh.interval.ms`) and might thus be outdated.
 request.timeout.ms                       |          5000 | The ack timeout of the producer request in milliseconds. This value is only enforced by the broker and relies on `request.required.acks` being > 0.
-message.timeout.ms                       |        300000 | Local message timeout. This value is only enforced locally and limits the time a produced message waits for successful delivery.
+message.timeout.ms                       |        300000 | Local message timeout. This value is only enforced locally and limits the time a produced message waits for successful delivery. A time of 0 is infinite.
 partitioner                              |               | Partitioner callback (set with rd_kafka_topic_conf_set_partitioner_cb())
 opaque                                   |               | Application opaque (set with rd_kafka_topic_conf_set_opaque())
 auto.commit.enable                       |          true | If true, periodically commit offset of the last message handed to the application. This commited offset will be used when the process restarts to pick up where it left off. If false, the application will have to call `rd_kafka_offset_store()` to store an offset (optional). **NOTE:** There is currently no zookeeper integration, offsets will be written to local file according to offset.store.path.

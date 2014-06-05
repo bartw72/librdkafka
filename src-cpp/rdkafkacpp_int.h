@@ -102,7 +102,12 @@ class MessageImpl : public Message {
   }
 
   std::string         errstr() const {
-    const char *es = rd_kafka_message_errstr(rkmessage_);
+    /* FIXME: If there is a error string in payload (for consume_cb)
+     *        it wont be shown since 'payload' is reused for errstr
+     *        and we cant distinguish between consumer and producer.
+     *        For the producer case the payload needs to be the original
+     *        payload pointer. */
+    const char *es = rd_kafka_err2str(rkmessage_->err);
     return std::string(es ? : "");
   }
 
@@ -116,7 +121,7 @@ class MessageImpl : public Message {
   size_t              len () const { return rkmessage_->len; }
   const std::string  *key () const { return NULL; /* FIXME */ }
   int64_t             offset () const { return rkmessage_->offset; }
-  void               *msg_opaque () const { return msg_opaque_; }
+  void               *msg_opaque () const { return rkmessage_->_private; };
 
   RdKafka::Topic *topic_;
   const rd_kafka_message_t *rkmessage_;
@@ -124,7 +129,6 @@ class MessageImpl : public Message {
   /* For error signalling by the C++ layer the .._err_ message is
    * used as a place holder and rkmessage_ is set to point to it. */
   rd_kafka_message_t rkmessage_err_;
-  void *msg_opaque_;
 };
 
 

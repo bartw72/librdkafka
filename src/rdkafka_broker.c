@@ -128,6 +128,7 @@ static void rd_kafka_broker_set_state (rd_kafka_broker_t *rkb,
 		(void)rd_atomic_sub(&rkb->rkb_rk->rk_broker_down_cnt, 1);
 
 	rkb->rkb_state = state;
+        rkb->rkb_ts_state = rd_clock();
 }
 
 
@@ -324,32 +325,6 @@ static void rd_kafka_bufq_purge (rd_kafka_broker_t *rkb,
 }
 
 
-/**
- * Scan the wait-response queue for message timeouts.
- */
-static void rd_kafka_broker_waitresp_timeout_scan (rd_kafka_broker_t *rkb,
-						   rd_ts_t now) {
-	rd_kafka_buf_t *rkbuf, *tmp;
-	int cnt = 0;
-
-	rd_kafka_assert(rkb->rkb_rk, pthread_self() == rkb->rkb_thread);
-
-	TAILQ_FOREACH_SAFE(rkbuf,
-			   &rkb->rkb_waitresps.rkbq_bufs, rkbuf_link, tmp) {
-		if (likely(rkbuf->rkbuf_ts_timeout > now))
-			continue;
-
-		rd_kafka_bufq_deq(&rkb->rkb_waitresps, rkbuf);
-
-		rkbuf->rkbuf_cb(rkb, RD_KAFKA_RESP_ERR__MSG_TIMED_OUT,
-				NULL, rkbuf, rkbuf->rkbuf_opaque);
-		cnt++;
-	}
-
-	if (cnt > 0)
-		rd_rkb_dbg(rkb, MSG, "REQTMOUT", "Timed out %i requests", cnt);
-}
-
 
 /**
  * Failure propagation to application.
@@ -381,6 +356,8 @@ static void rd_kafka_broker_fail (rd_kafka_broker_t *rkb,
 		rkb->rkb_s = -1;
 		rkb->rkb_pfd.fd = rkb->rkb_s;
 	}
+
+        rkb->rkb_req_timeouts = 0;
 
 	if (rkb->rkb_recv_buf) {
 		rd_kafka_buf_destroy(rkb->rkb_recv_buf);
@@ -465,6 +442,55 @@ static void rd_kafka_broker_fail (rd_kafka_broker_t *rkb,
 		rd_kafka_topic_leader_query(rkb->rkb_rk, NULL);
 }
 
+
+/**
+ * Scan the wait-response queue for message timeouts.
+ *
+ * Locality: Broker thread
+ */
+static void rd_kafka_broker_waitresp_timeout_scan (rd_kafka_broker_t *rkb,
+						   rd_ts_t now) {
+	rd_kafka_buf_t *rkbuf, *tmp;
+	int cnt = 0;
+
+	rd_kafka_assert(rkb->rkb_rk, pthread_self() == rkb->rkb_thread);
+
+	TAILQ_FOREACH_SAFE(rkbuf,
+			   &rkb->rkb_waitresps.rkbq_bufs, rkbuf_link, tmp) {
+		if (likely(rkbuf->rkbuf_ts_timeout > now))
+			continue;
+
+		rd_kafka_bufq_deq(&rkb->rkb_waitresps, rkbuf);
+
+		rkbuf->rkbuf_cb(rkb, RD_KAFKA_RESP_ERR__MSG_TIMED_OUT,
+				NULL, rkbuf, rkbuf->rkbuf_opaque);
+		cnt++;
+	}
+
+	if (cnt > 0) {
+		rd_rkb_dbg(rkb, MSG, "REQTMOUT", "Timed out %i requests", cnt);
+
+                /* Fail the broker if socket.max.fails is configured and
+                 * now exceeded. */
+                rkb->rkb_req_timeouts   += cnt;
+                rkb->rkb_c.req_timeouts += cnt;
+
+                if (rkb->rkb_rk->rk_conf.socket_max_fails &&
+                    rkb->rkb_req_timeouts >=
+                    rkb->rkb_rk->rk_conf.socket_max_fails &&
+                    rkb->rkb_state == RD_KAFKA_BROKER_STATE_UP) {
+                        errno = ETIMEDOUT;
+                        rd_kafka_broker_fail(rkb,
+                                             RD_KAFKA_RESP_ERR__MSG_TIMED_OUT,
+                                             "%i request(s) timed out: "
+                                             "disconnect",
+                                             rkb->rkb_req_timeouts);
+                }
+        }
+}
+
+
+
 static ssize_t rd_kafka_broker_send (rd_kafka_broker_t *rkb,
 				     const struct msghdr *msg) {
 	ssize_t r;
@@ -472,6 +498,10 @@ static ssize_t rd_kafka_broker_send (rd_kafka_broker_t *rkb,
 	rd_kafka_assert(rkb->rkb_rk, rkb->rkb_state>=RD_KAFKA_BROKER_STATE_UP);
 	rd_kafka_assert(rkb->rkb_rk, rkb->rkb_s != -1);
 
+#ifdef sun
+	/* See recvmsg() comment. Setting it here to be safe. */
+	errno = EAGAIN;
+#endif
 	r = sendmsg(rkb->rkb_s, msg, MSG_DONTWAIT
 #ifdef MSG_NOSIGNAL
 		    |MSG_NOSIGNAL
@@ -590,11 +620,11 @@ static void rd_kafka_broker_buf_enq1 (rd_kafka_broker_t *rkb,
 	rkbuf->rkbuf_reqhdr.ApiVersion = 0;
 	rkbuf->rkbuf_reqhdr.CorrId = htonl(rkbuf->rkbuf_corrid);
 
-	rkbuf->rkbuf_iov[0].iov_base = &rkbuf->rkbuf_reqhdr;
+	rkbuf->rkbuf_iov[0].iov_base = (void *)&rkbuf->rkbuf_reqhdr;
 	rkbuf->rkbuf_iov[0].iov_len  = sizeof(rkbuf->rkbuf_reqhdr);
 
 	/* Header ClientId */
-	rkbuf->rkbuf_iov[1].iov_base = rkb->rkb_rk->rk_clientid;
+	rkbuf->rkbuf_iov[1].iov_base = (void *)rkb->rkb_rk->rk_clientid;
 	rkbuf->rkbuf_iov[1].iov_len =
 		RD_KAFKAP_STR_SIZE(rkb->rkb_rk->rk_clientid);
 
@@ -1357,9 +1387,9 @@ static int rd_kafka_recv (rd_kafka_broker_t *rkb) {
 
 		rkbuf = rd_kafka_buf_new(0, 0);
 
-		rkbuf->rkbuf_iov[0].iov_base = &rkbuf->rkbuf_reshdr;
+		rkbuf->rkbuf_iov[0].iov_base = (void *)&rkbuf->rkbuf_reshdr;
 		rkbuf->rkbuf_iov[0].iov_len = sizeof(rkbuf->rkbuf_reshdr);
-		
+
 		rkbuf->rkbuf_msg.msg_iov = rkbuf->rkbuf_iov;
 		rkbuf->rkbuf_msg.msg_iovlen = 1;
 
@@ -1379,6 +1409,11 @@ static int rd_kafka_recv (rd_kafka_broker_t *rkb) {
 
 	rd_kafka_assert(rkb->rkb_rk, rd_kafka_msghdr_size(&msg) > 0);
 
+#ifdef sun
+	/* SunOS doesn't seem to set errno when recvmsg() fails
+	 * due to no data and MSG_DONTWAIT is set. */
+	errno = EAGAIN;
+#endif
 	if ((r = recvmsg(rkb->rkb_s, &msg, MSG_DONTWAIT)) == -1) {
 		if (errno == EAGAIN)
 			return 0;
@@ -1417,7 +1452,7 @@ static int rd_kafka_recv (rd_kafka_broker_t *rkb) {
 				 "Invalid message size %zd (0..%i): "
 				 "increase receive.message.max.bytes",
 				 rkbuf->rkbuf_len-4,
-				 rkb->rkb_rk->rk_conf.max_msg_size);
+				 rkb->rkb_rk->rk_conf.recv_max_msg_size);
 			rkb->rkb_c.rx_err++;
 			err_code = RD_KAFKA_RESP_ERR__BAD_MSG;
 
@@ -1489,6 +1524,7 @@ int rd_kafka_socket_cb_generic (int domain, int type, int protocol,
 static int rd_kafka_broker_connect (rd_kafka_broker_t *rkb) {
 	rd_sockaddr_inx_t *sinx;
 	int one __attribute__((unused)) = 1;
+        int on = 1;
 
 	rd_rkb_dbg(rkb, BROKER, "CONNECT",
 		   "broker in state %s connecting",
@@ -1520,6 +1556,22 @@ static int rd_kafka_broker_connect (rd_kafka_broker_t *rkb) {
 		       strerror(errno));
 #endif
 
+        /* Enable TCP keep-alives, if configured. */
+        if (rkb->rkb_rk->rk_conf.socket_keepalive) {
+#ifdef SO_KEEPALIVE
+                if (setsockopt(rkb->rkb_s, SOL_SOCKET, SO_KEEPALIVE,
+                               &on, sizeof(on)) == -1)
+                        rd_rkb_dbg(rkb, BROKER, "SOCKET",
+                                   "Failed to set SO_KEEPALIVE: %s",
+                                   strerror(errno));
+#else
+                rd_rkb_dbg(rkb, BROKER, "SOCKET",
+                           "System does not support "
+                           "socket.keepalive.enable (SO_KEEPALIVE)");
+#endif
+        }
+
+        /* Connect to broker */
 	if (connect(rkb->rkb_s, (struct sockaddr *)sinx,
 		    RD_SOCKADDR_INX_LEN(sinx)) == -1) {
 		rd_rkb_dbg(rkb, BROKER, "CONNECT",
@@ -2106,7 +2158,7 @@ static int rd_kafka_broker_produce_toppar (rd_kafka_broker_t *rkb,
 			msghdr2 = malloc(sizeof(*msghdr2) + siov.iov_len);
 			siov.iov_base = (void *)(msghdr2+1);
 
-			strm.next_out = siov.iov_base;
+			strm.next_out = (void *)siov.iov_base;
 			strm.avail_out = siov.iov_len;
 
 			/* Iterate through each message and compress it. */
@@ -2116,7 +2168,7 @@ static int rd_kafka_broker_produce_toppar (rd_kafka_broker_t *rkb,
 				if (rkbuf->rkbuf_msg.msg_iov[i].iov_len == 0)
 					continue;
 
-				strm.next_in = rkbuf->rkbuf_msg.
+				strm.next_in = (void *)rkbuf->rkbuf_msg.
 					msg_iov[i].iov_base;
 				strm.avail_in = rkbuf->rkbuf_msg.
 					msg_iov[i].iov_len;
@@ -2232,7 +2284,7 @@ static int rd_kafka_broker_produce_toppar (rd_kafka_broker_t *rkb,
 					       (void *)&msghdr2->MagicByte,
 					       1+1+4+4);
 		msghdr2->Crc = rd_crc32_update(msghdr2->Crc,
-					       siov.iov_base, coutlen);
+					       (void *)siov.iov_base, coutlen);
 		msghdr2->Crc = htonl(rd_crc32_finalize(msghdr2->Crc));
 
 		/* Update enveloping MessageSet's length. */
@@ -2356,9 +2408,23 @@ static void rd_kafka_broker_io_serve (rd_kafka_broker_t *rkb) {
  * Idle function for unassigned brokers
  */
 static void rd_kafka_broker_ua_idle (rd_kafka_broker_t *rkb) {
+	rd_ts_t last_timeout_scan = rd_clock();
+
 	while (!rkb->rkb_rk->rk_terminate &&
-	       rkb->rkb_state == RD_KAFKA_BROKER_STATE_UP)
+	       rkb->rkb_state == RD_KAFKA_BROKER_STATE_UP) {
+		rd_ts_t now;
+
 		rd_kafka_broker_io_serve(rkb);
+
+                now = rd_clock();
+
+		if (unlikely(last_timeout_scan + 1000000 < now)) {
+                        /* Scan wait-response queue */
+                        rd_kafka_broker_waitresp_timeout_scan(rkb, now);
+			last_timeout_scan = now;
+		}
+        }
+
 }
 
 
@@ -2617,7 +2683,8 @@ static rd_kafka_resp_err_t rd_kafka_messageset_handle (rd_kafka_broker_t *rkb,
 	rd_kafka_buf_t *rkbufz;
 
 	if (_REMAIN() == 0)
-		_FAIL("empty messageset");
+		_FAIL("%s [%"PRId32"] empty messageset",
+		      rktp->rktp_rkt->rkt_topic->str, rktp->rktp_partition);
 
 	while (_REMAIN() > 0) {
 		struct {
@@ -2815,6 +2882,10 @@ err:
 	 *    message at the end of the message set.
 	 *    Clients should handle this case."
 	 * We're handling it by not passing the error upstream. */
+	rd_rkb_log(rkb, LOG_WARNING, "PROTOERR",
+		   "Previous parsing error for topic %s [%"PRId32"]",
+		   rktp->rktp_rkt->rkt_topic->str, rktp->rktp_partition);
+
 	return RD_KAFKA_RESP_ERR_NO_ERROR;
 }
 
@@ -3675,6 +3746,7 @@ static int rd_kafka_broker_fetch_toppars (rd_kafka_broker_t *rkb) {
 	int cnt = 0;
 	rd_kafka_buf_t *rkbuf;
 	rd_ts_t now = rd_clock();
+        int max_cnt;
 
 	/* Create buffer and iovecs:
 	 *   1 x part1 header
@@ -3684,7 +3756,12 @@ static int rd_kafka_broker_fetch_toppars (rd_kafka_broker_t *rkb) {
 
 	rd_kafka_broker_toppars_rdlock(rkb);
 
-	rkbuf = rd_kafka_buf_new(1 + (rkb->rkb_toppar_cnt * (1 + 1)),
+        /* FIXME: Workaround for clusters with more than 500 partitions.
+         *        This has no negative impact as long as the application
+         *        does not consume from more than 500 partitions from a
+         *        single broker. */
+        max_cnt = RD_MIN(rkb->rkb_toppar_cnt, 500);
+	rkbuf = rd_kafka_buf_new(1 + (max_cnt * (1 + 1)),
 				 sizeof(*fr) +
 				 (sizeof(*tp) * rkb->rkb_toppar_cnt));
 
@@ -3749,6 +3826,13 @@ static int rd_kafka_broker_fetch_toppars (rd_kafka_broker_t *rkb) {
 			continue;
                 }
 
+                if (cnt >= max_cnt) {
+                        rd_rkb_dbg(rkb, TOPIC, "FETCH",
+                                   "FIXME: Fetching too many "
+                                   "partitions (>%i), see issue #110",
+                                   max_cnt);
+                        break;
+                }
 
 		/* Push topic name onto buffer stack. */
 		rd_kafka_buf_push(rkbuf, rktp->rktp_rkt->rkt_topic,

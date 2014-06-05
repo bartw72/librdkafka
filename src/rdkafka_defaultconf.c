@@ -86,7 +86,7 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  "This is a safety precaution to avoid memory exhaustion in case of "
 	  "protocol hickups. "
           "The value should be at least fetch.message.max.bytes * number of "
-          "partitions consumed from.",
+          "partitions consumed from + messaging overhead (e.g. 200000 bytes).",
 	  1000, 1000000000, 100000000 },
 	{ _RK_GLOBAL, "metadata.request.timeout.ms", _RK_C_INT,
 	  _RK(metadata_request_timeout_ms),
@@ -134,6 +134,16 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  _RK(socket_rcvbuf_size),
 	  "Broker socket receive buffer size. System default is used if 0.",
 	  0, 100000000, 0 },
+	{ _RK_GLOBAL, "socket.keepalive.enable", _RK_C_BOOL,
+	  _RK(socket_keepalive),
+          "Enable TCP keep-alives (SO_KEEPALIVE) on broker sockets",
+          0, 1, 0 },
+        { _RK_GLOBAL, "socket.max.fails", _RK_C_INT,
+          _RK(socket_max_fails),
+          "Disconnect from broker when this number of send failures "
+          "(e.g., timed out requests) is reached. Disable with 0. "
+          "NOTE: The connection is automatically re-established.",
+          0, 1000000, 3 },
 	{ _RK_GLOBAL, "broker.address.ttl", _RK_C_INT,
 	  _RK(broker_addr_ttl),
 	  "How long to cache the broker address resolving results.",
@@ -308,8 +318,8 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  _RKT(message_timeout_ms),
 	  "Local message timeout. "
 	  "This value is only enforced locally and limits the time a "
-	  "produced message waits for successful delivery.",
-	  1, 900*1000, 300*1000 },
+	  "produced message waits for successful delivery. A time of 0 is infinite.",
+	  0, 900*1000, 300*1000 },
 	{ _RK_TOPIC|_RK_PRODUCER, "partitioner", _RK_C_PTR,
 	  _RKT(partitioner),
 	  "Partitioner callback "

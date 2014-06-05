@@ -68,9 +68,9 @@ const char *rd_kafka_version_str (void);
 /**
  * rd_kafka_t handle type
  */
-typedef enum {
+typedef enum rd_kafka_type_t {
 	RD_KAFKA_PRODUCER,
-	RD_KAFKA_CONSUMER,
+	RD_KAFKA_CONSUMER
 } rd_kafka_type_t;
 
 
@@ -136,7 +136,7 @@ typedef enum {
 	RD_KAFKA_RESP_ERR_REPLICA_NOT_AVAILABLE = 9,
 	RD_KAFKA_RESP_ERR_MSG_SIZE_TOO_LARGE = 10,
 	RD_KAFKA_RESP_ERR_STALE_CTRL_EPOCH = 11,
-	RD_KAFKA_RESP_ERR_OFFSET_METADATA_TOO_LARGE = 12,
+	RD_KAFKA_RESP_ERR_OFFSET_METADATA_TOO_LARGE = 12
 } rd_kafka_resp_err_t;
 
 
@@ -233,7 +233,7 @@ rd_kafka_message_errstr (const rd_kafka_message_t *rkmessage) {
 typedef enum {
 	RD_KAFKA_CONF_UNKNOWN = -2, /* Unknown configuration name. */
 	RD_KAFKA_CONF_INVALID = -1, /* Invalid configuration value. */
-	RD_KAFKA_CONF_OK = 0,  /* Configuration okay */
+	RD_KAFKA_CONF_OK = 0        /* Configuration okay */
 } rd_kafka_conf_res_t;
 
 
@@ -820,7 +820,7 @@ rd_kafka_resp_err_t rd_kafka_offset_store (rd_kafka_topic_t *rkt,
  *
  * Returns 0 on success or -1 on error in which case errno is set accordingly:
  *   ENOBUFS  - maximum number of outstanding messages has been reached:
- *              "queue.buffering.max.message"
+ *              "queue.buffering.max.messages"
  *              (RD_KAFKA_RESP_ERR__QUEUE_FULL)
  *   EMSGSIZE - message is larger than configured max size:
  *              "messages.max.bytes".
@@ -844,6 +844,33 @@ int rd_kafka_produce (rd_kafka_topic_t *rkt, int32_t partitition,
 
 
 
+/**
+ * Produce multiple messages.
+ *
+ * If partition is RD_KAFKA_PARTITION_UA the configured partitioner will
+ * be run for each message (slower), otherwise the messages will be enqueued
+ * to the specified partition directly (faster).
+ *
+ * The messages are provided in the array `rkmessages` of count `message_cnt`
+ * elements.
+ * The `partition` and `msgflags` are used for all provided messages.
+ *
+ * Honoured `rkmessages[]` fields are:
+ *   payload,len     - Message payload and length
+ *   key,key_len     - Optional message key
+ *   _private        - Message opaque pointer (msg_opaque)
+ *   err             - Will be set according to success or failure.
+ *                     Application only needs to check for errors if
+ *                     return value != `message_cnt`.
+ *
+ * Returns the number of messages succesfully enqueued for producing.
+ */
+int rd_kafka_produce_batch (rd_kafka_topic_t *rkt, int32_t partition,
+                            int msgflags,
+                            rd_kafka_message_t *rkmessages, int message_cnt);
+
+
+
 
 /*******************************************************************
  *								   *
@@ -855,16 +882,16 @@ int rd_kafka_produce (rd_kafka_topic_t *rkt, int32_t partitition,
 /**
  * Metadata: Broker information
  */
-struct rd_kafka_metadata_broker {
+typedef struct rd_kafka_metadata_broker {
         int32_t     id;             /* Broker Id */
         char       *host;           /* Broker hostname */
         int         port;           /* Broker listening port */
-};
+} rd_kafka_metadata_broker_t;
 
 /**
  * Metadata: Partition information
  */
-struct rd_kafka_metadata_partition {
+typedef struct rd_kafka_metadata_partition {
         int32_t     id;             /* Partition Id */
         rd_kafka_resp_err_t err;    /* Partition error reported by broker */
         int32_t     leader;         /* Leader broker */
@@ -872,23 +899,23 @@ struct rd_kafka_metadata_partition {
         int32_t    *replicas;       /* Replica brokers */
         int         isr_cnt;        /* Number of ISR brokers in 'isrs' */
         int32_t    *isrs;           /* In-Sync-Replica brokers */
-};
+} rd_kafka_metadata_partition_t;
 
 /**
  * Metadata: Topic information
  */
-struct rd_kafka_metadata_topic {
+typedef struct rd_kafka_metadata_topic {
         char       *topic;          /* Topic name */
         int         partition_cnt;  /* Number of partitions in 'partitions' */
         struct rd_kafka_metadata_partition *partitions; /* Partitions */
         rd_kafka_resp_err_t err;    /* Topic error reported by broker */
-};
+} rd_kafka_metadata_topic_t;
 
 
 /**
  * Metadata container
  */
-struct rd_kafka_metadata {
+typedef struct rd_kafka_metadata {
         int         broker_cnt;     /* Number of brokers in 'brokers' */
         struct rd_kafka_metadata_broker *brokers;  /* Brokers */
 
@@ -897,7 +924,7 @@ struct rd_kafka_metadata {
 
         int32_t     orig_broker_id; /* Broker originating this metadata */
         char       *orig_broker_name; /* Name of originating broker */
-};
+} rd_kafka_metadata_t;
 
 
 /**
